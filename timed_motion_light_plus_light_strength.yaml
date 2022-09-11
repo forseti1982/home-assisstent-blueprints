@@ -15,9 +15,9 @@ blueprint:
         target:
           entity:
             domain: light
-    light_strength:
-      name: Light Strength
-      description: Light level for configured lamps on trigger.
+    light_brightness:
+      name: Light brightness
+      description: Light brightness level for configured lamps on trigger.
       default: 50
       selector:
         number:
@@ -76,12 +76,15 @@ condition:
   - condition: time
     after: !input time_from
     before: !input time_to
+  - condition: numeric_state
+    after: !input illuminance_sensor
+    before: !input illuminance_sensor
 
 action:
   - service: light.turn_on
     target: !input light_target
     data:
-      brightness_pct: !input light_strength
+      brightness_pct: !input light_brightness
   - wait_for_trigger:
       platform: state
       entity_id: !input motion_entity
