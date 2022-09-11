@@ -15,6 +15,7 @@ blueprint:
         target:
           entity:
             domain: light
+            device_class: light
     light_brightness:
       name: Light brightness
       description: Light brightness level for configured lamps on trigger.
