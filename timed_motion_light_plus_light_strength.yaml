@@ -1,5 +1,5 @@
 blueprint:
-  name: LIGHT - Motion activated Light with LUX and Time relation
+  name: LIGHTS - Motion activated Light with LUX and Time relation
   description: Turn on a light when motion is detected within a certain time contraint, related to the lux strengh as an ECO mode.
   domain: automation
   input:
