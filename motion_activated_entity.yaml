@@ -1,5 +1,5 @@
 blueprint:
-  name: Turn on based on motion
+  name: LIGHTS -Automation based on LUX and TIME
   description: "Turn on a light, switch, scene, script or group based on motion detection,\
     \ and low light level.\n\
     \nRequired entities:\n  - Motion sensor (single sensor or group)\n  - Target entity\
