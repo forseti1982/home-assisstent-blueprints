@@ -22,7 +22,7 @@ blueprint:
       selector:
         number:
           min: 0
-          max: 100
+          max: 200
     time_from:
       name: 'Timeslot from'
       default: "22:00:00"
