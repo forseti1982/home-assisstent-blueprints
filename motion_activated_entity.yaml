@@ -13,7 +13,10 @@ blueprint:
     \ certain amount of seconds, you can use the Wait Time input. \n- If you want another\
     \ entity than the target_entity to turn off after the delay, you can define a\
     \ separate Turn-off entity. \n- If you do not enable the optional entities the automation\
-    \ will skip these conditions."
+    \ will skip these conditions.\n\
+    \nTurn-off is driven by a dedicated 'no motion for X seconds' trigger instead of\
+    \ a script-internal wait, so a flickering sensor or a Home Assistant restart can\
+    \ no longer leave the target entity stuck on."
   domain: automation
   input:
     motion_sensor:
@@ -31,7 +34,8 @@ blueprint:
     no_motion_wait:
       name: Turn off wait time (seconds)
       description: Time in seconds to leave the target entity on after last motion
-        is detected.
+        is detected. The sensor must stay off for this whole time - a short false
+        re-trigger restarts the countdown instead of re-running the automation.
       default: 0
       selector:
         number:
@@ -49,7 +53,9 @@ blueprint:
     illuminance_cutoff:
       name: (OPTIONAL) Illuminance cutoff value
       description: This input_number will be used to compare to the current illumination
-        to determine if it is low.
+        to determine if it is low. If a cutoff is set but the sensor reports no usable
+        value, the automation does NOT turn on (it no longer treats an unavailable
+        sensor as 0 lx / pitch dark).
       default:
       selector:
         number:
@@ -66,7 +72,8 @@ blueprint:
     time_limit_after:
       name: (OPTIONAL) Only run after time.
       description: Automation will only run when time is later than this input_datetime
-        value.
+        value. Only limits turning ON - turning off is never blocked by the time
+        window.
       default:
       selector:
         entity:
@@ -74,7 +81,8 @@ blueprint:
     time_limit_before:
       name: (OPTIONAL) Only run before time.
       description: Automation will only run when time is earlier than this input_datetime
-        value.
+        value. Only limits turning ON - turning off is never blocked by the time
+        window.
       default:
       selector:
         entity:
@@ -102,9 +110,13 @@ blueprint:
       default:
       selector:
         action: {}
-  source_url: https://github.com/apollo1220/blueprints/blob/main/motion_activated_entity.yaml
-mode: restart
-max_exceeded: silent
+  source_url: https://github.com/forseti1982/home-assisstent-blueprints/blob/main/motion_activated_entity.yaml
+
+# Both branches only ever run a single, instant service call, so a queue is enough
+# and no run can be killed halfway through any more.
+mode: queued
+max: 10
+
 variables:
   target_entity: !input 'target_entity'
   illuminance_currently: !input 'illuminance_sensor'
@@ -116,58 +128,81 @@ variables:
   turn_off_blocker_entity: !input 'turn_off_blocker_entity'
   target_off_entity: !input 'target_off_entity'
   target_off_action: !input 'target_off_action'
+
 trigger:
+# 'from: off' is required: without it every unavailable -> on hop (reboot, zigbee
+# reconnect, flat battery) counts as motion.
+- id: motion_on
   platform: state
   entity_id: !input 'motion_sensor'
+  from: 'off'
   to: 'on'
-condition:
-- condition: template
-  value_template: '{{ (states(target_entity) == ''on'') or (illuminance_currently
-    == none) or (illuminance_cutoff == none) or (states[illuminance_currently].state
-    | int < illuminance_cutoff | int) }}'
-- condition: template
-  value_template: '{{ (blocker_entity == none) or (states[blocker_entity].state ==
-    ''off'') }}'
-- condition: template
-  value_template: '{% set current_time = now().strftime("%H:%M")  %}
+# The whole turn-off timing lives in 'for:'. A short false re-detect resets the
+# timer rather than restarting the automation, and the timer survives a restart.
+- id: motion_off
+  platform: state
+  entity_id: !input 'motion_sensor'
+  from: 'on'
+  to: 'off'
+  for:
+    hours: 0
+    minutes: 0
+    seconds: !input 'no_motion_wait'
 
-    {% if time_limit_before != none and time_limit_after == none %} {{ states[time_limit_before].state
-    > current_time }} {% elif time_limit_before == none and time_limit_after != none
-    %} {{ states[time_limit_after].state < current_time }} {% elif time_limit_before
-    != none and time_limit_after != none %} {% set before_limit_is_on_next_day = states[time_limit_after].state
-    > states[time_limit_before].state  %} {% if not before_limit_is_on_next_day %} {{ (states[time_limit_after].state
-    < current_time) and (states[time_limit_before].state > current_time) }} {% elif
-    before_limit_is_on_next_day %} {{ (states[time_limit_before].state > current_time)
-    or (states[time_limit_after].state < current_time) }} {% endif %} {% else %} true
-    {% endif %}
-
-    '
 action:
-- service: homeassistant.turn_on
-  entity_id: !input 'target_entity'
-- condition: template
-  value_template: '{{ no_motion_wait != none }}'
-- wait_for_trigger:
-    platform: state
-    entity_id: !input 'motion_sensor'
-    from: 'on'
-    to: 'off'
-- delay:
-    seconds: '{{ no_motion_wait | int }}'
-- condition: template
-  value_template: '{{ (turn_off_blocker_entity == none) or (states[turn_off_blocker_entity].state
-    == ''off'') }}'
 - choose:
+
+  # ------------------------------ TURN ON ------------------------------
   - conditions:
+    - condition: trigger
+      id: motion_on
+    # Illuminance. states() instead of states[] so a missing entity cannot raise,
+    # and is_number so 'unavailable' is not silently read as 0 lx.
     - condition: template
-      value_template: '{{ (target_off_entity != none) }}'
+      value_template: '{% set lux = states(illuminance_currently) if illuminance_currently
+        != none else none %} {{ (illuminance_currently == none) or (illuminance_cutoff
+        == none) or ((lux is not none) and (lux | is_number) and (lux | float < illuminance_cutoff
+        | float)) }}'
+    - condition: template
+      value_template: '{{ (blocker_entity == none) or (states(blocker_entity) != ''on'')
+        }}'
+    - condition: template
+      value_template: '{% set current_time = now().strftime("%H:%M")  %}
+
+        {% if time_limit_before != none and time_limit_after == none %} {{ states(time_limit_before)
+        > current_time }} {% elif time_limit_before == none and time_limit_after !=
+        none %} {{ states(time_limit_after) < current_time }} {% elif time_limit_before
+        != none and time_limit_after != none %} {% set before_limit_is_on_next_day
+        = states(time_limit_after) > states(time_limit_before)  %} {% if not before_limit_is_on_next_day
+        %} {{ (states(time_limit_after) < current_time) and (states(time_limit_before)
+        > current_time) }} {% elif before_limit_is_on_next_day %} {{ (states(time_limit_before)
+        > current_time) or (states(time_limit_after) < current_time) }} {% endif %}
+        {% else %} true {% endif %}
+
+        '
     sequence:
-    - service: homeassistant.turn_off
-      entity_id: !input 'target_off_entity'
+    - service: homeassistant.turn_on
+      entity_id: !input 'target_entity'
+
+  # ------------------------------ TURN OFF -----------------------------
   - conditions:
+    - condition: trigger
+      id: motion_off
     - condition: template
-      value_template: '{{ (target_off_action != none) }}'
-    sequence: !input 'target_off_action'
-  default:
-  - service: homeassistant.turn_off
-    entity_id: !input 'target_entity'
+      value_template: '{{ (turn_off_blocker_entity == none) or (states(turn_off_blocker_entity)
+        != ''on'') }}'
+    sequence:
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ (target_off_entity != none) }}'
+        sequence:
+        - service: homeassistant.turn_off
+          entity_id: !input 'target_off_entity'
+      - conditions:
+        - condition: template
+          value_template: '{{ (target_off_action != none) }}'
+        sequence: !input 'target_off_action'
+      default:
+      - service: homeassistant.turn_off
+        entity_id: !input 'target_entity'
