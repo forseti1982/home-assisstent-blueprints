@@ -35,7 +35,9 @@ blueprint:
         time:
     no_motion_wait:
       name: Wait time
-      description: Time to leave the light on after last motion is detected.
+      description: Time to leave the light on after last motion is detected. The
+        sensor must stay off for this whole time - a short false re-detect resets
+        the countdown.
       default: 120
       selector:
         number:
@@ -53,43 +55,66 @@ blueprint:
     illuminance_cutoff:
       name: (OPTIONAL) Illuminance cutoff value
       description: This input_number will be used to compare to the current illumination
-        to determine if it is low.
+        to determine if it is low. If a cutoff is set but the sensor reports no usable
+        value, the light stays off.
       default:
       selector:
         number:
           min: 0
           max: 100
           unit_of_measurement: lx
+  source_url: https://github.com/forseti1982/home-assisstent-blueprints/blob/main/LIGHTS%20-%20Timed-lux%20based%20auto%20trigger%20with%20motion%20detection.yaml
 
-# If motion is detected within the delay,
-# we restart the script.
-mode: restart
-max_exceeded: silent
+# Only instant service calls in both branches, so nothing can be killed mid-run.
+mode: queued
+max: 10
+
+variables:
+  illuminance_currently: !input illuminance_sensor
+  illuminance_cutoff: !input illuminance_cutoff
 
 trigger:
+- id: motion_on
   platform: state
   entity_id: !input motion_entity
   from: "off"
   to: "on"
-
-condition:
-  - condition: time
-    after: !input time_from
-    before: !input time_to
-  - condition: numeric_state
-    after: !input illuminance_sensor
-    before: !input illuminance_sensor
+# Turn-off timing lives in 'for:' so it survives a restart and is immune to a
+# flickering sensor.
+- id: motion_off
+  platform: state
+  entity_id: !input motion_entity
+  from: "on"
+  to: "off"
+  for:
+    hours: 0
+    minutes: 0
+    seconds: !input no_motion_wait
 
 action:
-  - service: light.turn_on
-    target: !input light_target
-    data:
-      brightness_pct: !input light_brightness
-  - wait_for_trigger:
-      platform: state
-      entity_id: !input motion_entity
-      from: "on"
-      to: "off"
-  - delay: !input no_motion_wait
-  - service: light.turn_off
-    target: !input light_target
+- choose:
+  - conditions:
+    - condition: trigger
+      id: motion_on
+    - condition: time
+      after: !input time_from
+      before: !input time_to
+    # Was 'condition: numeric_state' with after/before keys, which is not valid
+    # config - it stopped the whole blueprint from loading. The cutoff input was
+    # never evaluated at all.
+    - condition: template
+      value_template: '{% set lux = states(illuminance_currently) if illuminance_currently
+        != none else none %} {{ (illuminance_currently == none) or (illuminance_cutoff
+        == none) or ((lux is not none) and (lux | is_number) and (lux | float < illuminance_cutoff
+        | float)) }}'
+    sequence:
+    - service: light.turn_on
+      target: !input light_target
+      data:
+        brightness_pct: !input light_brightness
+  - conditions:
+    - condition: trigger
+      id: motion_off
+    sequence:
+    - service: light.turn_off
+      target: !input light_target
